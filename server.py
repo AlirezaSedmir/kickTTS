@@ -14,6 +14,11 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app)
 
+@app.after_request
+def add_headers(response):
+    response.headers["ngrok-skip-browser-warning"] = "true"
+    return response
+
 # ── تنظیمات (از environment variables یا مستقیم) ──────────────────────────
 CONFIG = {
     "elevenlabs_api_key": os.environ.get("ELEVENLABS_API_KEY", ""),
@@ -217,6 +222,34 @@ def start_ws():
     thread.start()
 
 
+# ── Auth ─────────────────────────────────────────────────────────────────
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "kick123")
+
+def check_auth():
+    token = request.cookies.get("auth") or request.headers.get("X-Auth")
+    return token == DASHBOARD_PASSWORD
+
+def auth_required(f):
+    from functools import wraps
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not check_auth():
+            return jsonify({"error": "unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        pwd = (request.json or {}).get("password", "")
+        if pwd == DASHBOARD_PASSWORD:
+            from flask import make_response
+            resp = make_response(jsonify({"ok": True}))
+            resp.set_cookie("auth", pwd, max_age=60*60*24*30)
+            return resp
+        return jsonify({"error": "wrong password"}), 403
+    return render_template_string(LOGIN_HTML)
+
 # ── API Routes ────────────────────────────────────────────────────────────
 @app.route("/status")
 def status():
@@ -247,6 +280,7 @@ def audio_done():
 
 
 @app.route("/config", methods=["GET", "POST"])
+@auth_required
 def config_route():
     if request.method == "POST":
         data = request.json or {}
@@ -262,6 +296,7 @@ def config_route():
 
 
 @app.route("/queue/clear", methods=["POST"])
+@auth_required
 def clear_queue():
     while not audio_queue.empty():
         try:
@@ -275,6 +310,9 @@ def clear_queue():
 
 @app.route("/")
 def index():
+    if not check_auth():
+        from flask import redirect
+        return redirect("/login")
     return render_template_string(DASHBOARD_HTML)
 
 
@@ -282,6 +320,44 @@ def index():
 def player():
     return render_template_string(PLAYER_HTML)
 
+
+# ── لاگین HTML ───────────────────────────────────────────────────────────
+LOGIN_HTML = """<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ورود</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Tahoma, Arial, sans-serif; background: #0f0f0f; color: #eee;
+       display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+.box { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px; padding: 24px; width: 280px; }
+h2 { font-size: 16px; margin-bottom: 16px; text-align: center; }
+input { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #333;
+        background: #252525; color: #eee; font-size: 14px; margin-bottom: 10px; direction: ltr; }
+button { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #53fc18;
+         background: #1a4a1a; color: #53fc18; font-size: 14px; cursor: pointer; font-weight: bold; }
+.err { color: #ff5555; font-size: 12px; margin-top: 8px; text-align: center; display: none; }
+</style>
+</head>
+<body>
+<div class="box">
+  <h2>🎙 Kick TTS</h2>
+  <input type="password" id="pwd" placeholder="پسورد" onkeydown="if(event.key==='Enter')login()">
+  <button onclick="login()">ورود</button>
+  <div class="err" id="err">پسورد اشتباه است</div>
+</div>
+<script>
+async function login() {
+  const pwd = document.getElementById('pwd').value;
+  const r = await fetch('/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: pwd}) });
+  if (r.ok) { location.href = '/'; }
+  else { document.getElementById('err').style.display = 'block'; }
+}
+</script>
+</body>
+</html>"""
 
 # ── داشبورد HTML ──────────────────────────────────────────────────────────
 DASHBOARD_HTML = """<!DOCTYPE html>
@@ -444,67 +520,86 @@ PLAYER_HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TTS Player</title>
 <style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: Tahoma, Arial, sans-serif; background: #0f0f0f; color: #eee;
        display: flex; flex-direction: column; align-items: center; justify-content: center;
-       min-height: 100vh; padding: 20px; text-align: center; }
-.status { font-size: 48px; margin-bottom: 16px; }
-.text { font-size: 16px; color: #53fc18; margin-bottom: 8px; min-height: 24px; direction: rtl; }
-.sub { font-size: 12px; color: #555; }
-.badge { padding: 4px 12px; border-radius: 8px; font-size: 13px; margin-top: 12px; display: inline-block; }
+       min-height: 100vh; padding: 20px; text-align: center; user-select: none; }
+.icon { font-size: 56px; margin-bottom: 16px; transition: all 0.3s; }
+.text { font-size: 15px; color: #53fc18; margin-bottom: 8px; min-height: 22px; direction: rtl; line-height: 1.5; max-width: 300px; }
+.badge { padding: 4px 14px; border-radius: 8px; font-size: 13px; margin-top: 10px; display: inline-block; }
 .green { background: #1a3a1a; color: #53fc18; }
-.gray { background: #2a2a2a; color: #888; }
+.gray  { background: #2a2a2a; color: #888; }
+.red   { background: #3a1a1a; color: #ff5555; }
+.err { font-size: 11px; color: #ff5555; margin-top: 8px; max-width: 280px; }
 </style>
 </head>
 <body>
-<div class="status" id="icon">🔇</div>
-<div class="text" id="current-text">در انتظار چت...</div>
-<div class="sub" id="sub">سرور را باز کن و API Key را وارد کن</div>
-<div class="badge gray" id="badge">آماده</div>
+<div class="icon" id="icon">🔇</div>
+<div class="text" id="text">در انتظار چت...</div>
+<div class="badge gray" id="badge">متصل در حال اجرا</div>
+<div class="err" id="err"></div>
 
 <script>
 const SERVER = location.origin;
-let polling = false;
+let busy = false;
 
 async function checkAndPlay() {
-  if (polling) return;
-  polling = true;
+  if (busy) return;
+  busy = true;
   try {
-    const r = await fetch(SERVER + '/audio/current');
+    const r = await fetch(SERVER + '/audio/current', { cache: 'no-store' });
+
     if (r.status === 200) {
+      // صدا آماده‌ست
       const blob = await r.blob();
       const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
+
+      // دریافت متن
+      try {
+        const st = await fetch(SERVER + '/status', { cache: 'no-store' });
+        const sd = await st.json();
+        document.getElementById('text').textContent = sd.current_text || '';
+      } catch(_) {}
 
       document.getElementById('icon').textContent = '🔊';
       document.getElementById('badge').className = 'badge green';
-      document.getElementById('badge').textContent = '▶ پخش';
+      document.getElementById('badge').textContent = '▶ در حال پخش';
+      document.getElementById('err').textContent = '';
 
-      // get current text from status
-      const st = await fetch(SERVER + '/status');
-      const sd = await st.json();
-      document.getElementById('current-text').textContent = sd.current_text || '';
+      const audio = new Audio(url);
+      audio.volume = 1.0;
 
-      await new Promise((res, rej) => {
+      await new Promise((res) => {
         audio.onended = res;
-        audio.onerror = rej;
-        audio.play();
+        audio.onerror = res; // حتی اگه خطا داد ادامه بده
+        // autoplay بدون نیاز به کلیک (WebView)
+        const p = audio.play();
+        if (p && p.catch) p.catch(() => res());
       });
 
       URL.revokeObjectURL(url);
+
       // به سرور بگو پخش تموم شد
       await fetch(SERVER + '/audio/done', { method: 'POST' });
 
       document.getElementById('icon').textContent = '🔇';
       document.getElementById('badge').className = 'badge gray';
       document.getElementById('badge').textContent = 'آماده';
-      document.getElementById('current-text').textContent = 'در انتظار چت...';
+      document.getElementById('text').textContent = 'در انتظار چت...';
     }
+    // 204 = صدایی نیست، فقط صبر می‌کنیم
   } catch(e) {
-    document.getElementById('sub').textContent = 'خطا: ' + e.message;
+    document.getElementById('err').textContent = e.message;
+    document.getElementById('badge').className = 'badge red';
+    document.getElementById('badge').textContent = 'خطا - تلاش مجدد...';
+    await new Promise(r => setTimeout(r, 2000));
+    document.getElementById('badge').className = 'badge gray';
+    document.getElementById('badge').textContent = 'آماده';
   }
-  polling = false;
+  busy = false;
 }
 
+// شروع اتوماتیک بدون نیاز به کلیک
 setInterval(checkAndPlay, 800);
 </script>
 </body>
