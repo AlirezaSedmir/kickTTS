@@ -279,17 +279,9 @@ def audio_done():
     return jsonify({"ok": True})
 
 
-@app.route("/config", methods=["GET", "POST"])
+@app.route("/config", methods=["GET"])
 @auth_required
 def config_route():
-    if request.method == "POST":
-        data = request.json or {}
-        for k in ["elevenlabs_api_key", "voice_id", "chatroom_id", "name_format", "speed", "max_len"]:
-            if k in data:
-                CONFIG[k] = data[k]
-        if "blocked_words" in data:
-            CONFIG["blocked_words"] = [w.strip() for w in data["blocked_words"].split(",") if w.strip()]
-        return jsonify({"ok": True})
     safe = {k: v for k, v in CONFIG.items() if k != "elevenlabs_api_key"}
     safe["has_api_key"] = bool(CONFIG["elevenlabs_api_key"])
     return jsonify(safe)
